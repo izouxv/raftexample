@@ -15,3 +15,5 @@ hack/tls-setup/certs
 .idea
 raftexample.exe
 raftexample
+
+raftexample-*

@@ -22,9 +22,10 @@ import (
 	"sync"
 
 	"github.com/coreos/etcd/snap"
+	"fmt"
 )
 
-// a key-value store backed by raft
+// a key-value store backed by raftd
 type KvStore struct {
 	proposeC    chan<- string // channel for proposing updates
 	mu          sync.RWMutex
@@ -35,13 +36,14 @@ type KvStore struct {
 type kv struct {
 	Key string
 	Val string
+	Opt string
 }
 
 func NewKVStore(snapshotter *snap.Snapshotter, proposeC chan<- string, commitC <-chan *string, errorC <-chan error) *KvStore {
 	s := &KvStore{proposeC: proposeC, kvStore: make(map[string]string), snapshotter: snapshotter}
 	// replay log into key-value map
 	s.readCommits(commitC, errorC)
-	// read commits from raft into kvStore map until error
+	// read commits from raftd into kvStore map until error
 	go s.readCommits(commitC, errorC)
 	return s
 }
@@ -53,15 +55,18 @@ func (s *KvStore) Lookup(key string) (string, bool) {
 	return v, ok
 }
 
-func (s *KvStore) Propose(k string, v string) {
+func (s *KvStore) Propose(k string, v string, op string) {
 	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(kv{k, v}); err != nil {
+	if err := gob.NewEncoder(&buf).Encode(kv{k, v,op}); err != nil {
 		log.Fatal(err)
 	}
+
+	fmt.Println(buf.String())
 	s.proposeC <- string(buf.Bytes())
 }
 
 func (s *KvStore) readCommits(commitC <-chan *string, errorC <-chan error) {
+
 	for data := range commitC {
 		if data == nil {
 			// done replaying log; new data incoming
@@ -85,8 +90,18 @@ func (s *KvStore) readCommits(commitC <-chan *string, errorC <-chan error) {
 		if err := dec.Decode(&dataKv); err != nil {
 			log.Fatalf("raftexample: could not decode message (%v)", err)
 		}
+		log.Printf("do commit %s %s",dataKv.Key,dataKv.Val)
 		s.mu.Lock()
-		s.kvStore[dataKv.Key] = dataKv.Val
+
+		switch dataKv.Opt {
+		case "SET" :
+			s.kvStore[dataKv.Key] = dataKv.Val
+		case "DEL" :
+			delete(s.kvStore,dataKv.Key)
+		default:
+			//do nothing
+		}
+
 		s.mu.Unlock()
 	}
 	if err, ok := <-errorC; ok {

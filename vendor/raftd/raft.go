@@ -37,15 +37,15 @@ import (
 	"httpd"
 )
 
-// A key-value stream backed by raft
+// A key-value stream backed by raftd
 type raftNode struct {
 	proposeC    <-chan string            // proposed messages (k,v)
 	confChangeC <-chan raftpb.ConfChange // proposed cluster config changes
 	commitC     chan<- *string           // entries committed to log (k,v)
-	errorC      chan<- error             // errors from raft session
+	errorC      chan<- error             // errors from raftd session
 
-	id          int      // client ID for raft session
-	peers       []string // raft peer URLs
+	id          int      // client ID for raftd session
+	peers       []string // raftd peer URLs
 	join        bool     // node is joining an existing cluster
 	waldir      string   // path to WAL directory
 	snapdir     string   // path to snapshot directory
@@ -56,7 +56,7 @@ type raftNode struct {
 	snapshotIndex uint64
 	appliedIndex  uint64
 
-	// raft backing for the commit/error channel
+	// raftd backing for the commit/error channel
 	node        raft.Node
 	raftStorage *raft.MemoryStorage
 	wal         *wal.WAL
@@ -73,7 +73,7 @@ type raftNode struct {
 
 var defaultSnapCount uint64 = 10000
 
-// newRaftNode initiates a raft instance and returns a committed log entry
+// newRaftNode initiates a raftd instance and returns a committed log entry
 // channel and error channel. Proposals for log updates are sent over the
 // provided the proposal channel. All log entries are replayed over the
 // commit channel, followed by a nil message (to indicate the channel is
@@ -108,17 +108,14 @@ func NewRaftNode(id int, peers []string, join bool, getSnapshot func() ([]byte, 
 }
 
 func (rc *raftNode) saveSnap(snap raftpb.Snapshot) error {
-	// must save the snapshot index to the WAL before saving the
-	// snapshot to maintain the invariant that we only Open the
-	// wal at previously-saved snapshot indexes.
+	if err := rc.snapshotter.SaveSnap(snap); err != nil {
+		return err
+	}
 	walSnap := walpb.Snapshot{
 		Index: snap.Metadata.Index,
 		Term:  snap.Metadata.Term,
 	}
 	if err := rc.wal.SaveSnapshot(walSnap); err != nil {
-		return err
-	}
-	if err := rc.snapshotter.SaveSnap(snap); err != nil {
 		return err
 	}
 	return rc.wal.ReleaseLockTo(snap.Metadata.Index)
@@ -223,7 +220,7 @@ func (rc *raftNode) openWAL(snapshot *raftpb.Snapshot) *wal.WAL {
 	return w
 }
 
-// replayWAL replays WAL entries into the raft instance.
+// replayWAL replays WAL entries into the raftd instance.
 func (rc *raftNode) replayWAL() *wal.WAL {
 	log.Printf("replaying WAL of member %d", rc.id)
 	snapshot := rc.loadSnapshot()
@@ -238,7 +235,7 @@ func (rc *raftNode) replayWAL() *wal.WAL {
 	}
 	rc.raftStorage.SetHardState(st)
 
-	// append to storage so raft starts at the right place in log
+	// append to storage so raftd starts at the right place in log
 	rc.raftStorage.Append(ents)
 	// send nil once lastIndex is published so client knows commit channel is current
 	if len(ents) > 0 {
@@ -312,7 +309,7 @@ func (rc *raftNode) startRaft() {
 	go rc.serveChannels()
 }
 
-// stop closes http, closes all channels, and stops raft.
+// stop closes http, closes all channels, and stops raftd.
 func (rc *raftNode) stop() {
 	rc.stopHTTP()
 	close(rc.commitC)
@@ -390,7 +387,7 @@ func (rc *raftNode) serveChannels() {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
-	// send proposals over raft
+	// send proposals over raftd
 	go func() {
 		var confChangeCount uint64 = 0
 
@@ -400,7 +397,7 @@ func (rc *raftNode) serveChannels() {
 				if !ok {
 					rc.proposeC = nil
 				} else {
-					// blocks until accepted by raft state machine
+					// blocks until accepted by raftd state machine
 					rc.node.Propose(context.TODO(), []byte(prop))
 				}
 
@@ -414,17 +411,17 @@ func (rc *raftNode) serveChannels() {
 				}
 			}
 		}
-		// client closed channel; shutdown raft if not already
+		// client closed channel; shutdown raftd if not already
 		close(rc.stopc)
 	}()
 
-	// event loop on raft state machine updates
+	// event loop on raftd state machine updates
 	for {
 		select {
 		case <-ticker.C:
 			rc.node.Tick()
 
-		// store raft entries to wal, then publish over commit channel
+		// store raftd entries to wal, then publish over commit channel
 		case rd := <-rc.node.Ready():
 			rc.wal.Save(rd.HardState, rd.Entries)
 			if !raft.IsEmptySnap(rd.Snapshot) {

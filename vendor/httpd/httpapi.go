@@ -24,13 +24,13 @@ import (
 	"store"
 )
 
-// Handler for a http based key-value store backed by raft
-type httpKVAPI struct {
+// Handler for a http based key-value store backed by raftd
+type HttpKVAPI struct {
 	store       *store.KvStore
 	confChangeC chan<- raftpb.ConfChange
 }
 
-func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *HttpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	key := r.RequestURI
 	switch {
 	case r.Method == "PUT":
@@ -41,9 +41,9 @@ func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		h.store.Propose(key, string(v))
+		h.store.Propose(key, string(v),"SET")
 
-		// Optimistic-- no waiting for ack from raft. Value is not yet
+		// Optimistic-- no waiting for ack from raftd. Value is not yet
 		// committed so a subsequent GET on the key may return old value
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == "GET":
@@ -74,10 +74,10 @@ func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		h.confChangeC <- cc
 
-		// As above, optimistic that raft will apply the conf change
+		// As above, optimistic that raftd will apply the conf change
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == "DELETE":
-		nodeId, err := strconv.ParseUint(key[1:], 0, 64)
+		/*nodeId, err := strconv.ParseUint(key[1:], 0, 64)
 		if err != nil {
 			log.Printf("Failed to convert ID for conf change (%v)\n", err)
 			http.Error(w, "Failed on DELETE", http.StatusBadRequest)
@@ -90,8 +90,11 @@ func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		h.confChangeC <- cc
 
-		// As above, optimistic that raft will apply the conf change
-		w.WriteHeader(http.StatusNoContent)
+		// As above, optimistic that raftd will apply the conf change
+		w.WriteHeader(http.StatusNoContent)*/
+
+		h.store.Propose(key, "","DEL")
+
 	default:
 		w.Header().Set("Allow", "PUT")
 		w.Header().Add("Allow", "GET")
@@ -105,7 +108,7 @@ func (h *httpKVAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func ServeHttpKVAPI(kv *store.KvStore, port int, confChangeC chan<- raftpb.ConfChange, errorC <-chan error) {
 	srv := http.Server{
 		Addr: ":" + strconv.Itoa(port),
-		Handler: &httpKVAPI{
+		Handler: &HttpKVAPI{
 			store:       kv,
 			confChangeC: confChangeC,
 		},
@@ -116,7 +119,7 @@ func ServeHttpKVAPI(kv *store.KvStore, port int, confChangeC chan<- raftpb.ConfC
 		}
 	}()
 
-	// exit when raft goes down
+	// exit when raftd goes down
 	if err, ok := <-errorC; ok {
 		log.Fatal(err)
 	}
